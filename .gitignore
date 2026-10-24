@@ -1,2 +1,7 @@
 .DS_Store
 node_modules/
+
+# Personal financial exports / saved data — never commit real account data.
+*.csv
+*.json
+!design-tokens/*.json

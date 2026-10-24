@@ -2,34 +2,57 @@
    CONSTANTS
    ============================================================ */
 const ACTION_BUCKETS = [
-  { key: 'buy', label: 'Buy', test: /bought|buy|reinvest/i, sign: 1 },
-  { key: 'sell', label: 'Sell', test: /sold|sell|redeem/i, sign: -1 },
-  { key: 'dividend', label: 'Dividend', test: /dividend/i, sign: 0 },
-  { key: 'interest', label: 'Interest', test: /interest/i, sign: 0 },
-  { key: 'fee', label: 'Fee', test: /fee/i, sign: 0 },
-  { key: 'transfer', label: 'Transfer', test: /transfer|contribution|deposit|withdrawal/i, sign: 0 },
+  { key: 'buy', label: 'Buy', test: /bought|buy|reinvest/i },
+  { key: 'sell', label: 'Sell', test: /sold|sell|redeem/i },
+  { key: 'dividend', label: 'Dividend', test: /dividend/i },
+  { key: 'capital_gain', label: 'Capital Gain', test: /cap gain/i },
+  { key: 'interest', label: 'Interest', test: /interest/i },
+  { key: 'fee', label: 'Fee', test: /\bfee\b/i },
+  { key: 'transfer', label: 'Transfer', test: /transfer|contribution|deposit|withdrawal|journaled/i },
 ];
 
 function bucketFor(action){
   for (const b of ACTION_BUCKETS) if (b.test.test(action)) return b;
-  return { key: 'other', label: 'Other', sign: 0 };
+  return { key: 'other', label: 'Other' };
+}
+
+// Fidelity's Action column is a full sentence — e.g. "DIVIDEND RECEIVED
+// NVIDIA CORPORATION COM (NVDA) (Cash)" — with the security name and ticker
+// baked in, which is redundant with the Symbol/Description columns already
+// shown alongside it. This pulls out just the leading verb phrase for
+// display; falls back to truncating at the first "(" for actions (e.g.
+// transfers) that don't match a known phrase.
+const ACTION_PHRASES = /^(YOU BOUGHT|YOU SOLD|REINVESTMENT|DIVIDEND RECEIVED|LONG-TERM CAP GAIN|SHORT-TERM CAP GAIN|INTEREST EARNED|ELECTRONIC FUNDS TRANSFER|TRANSFERRED FROM|TRANSFERRED TO|JOURNALED)\b/i;
+function actionLabel(action){
+  const m = String(action || '').match(ACTION_PHRASES);
+  if (m) return m[1].toUpperCase();
+  return String(action || '').split(' (')[0];
 }
 
 /* ============================================================
-   CSV PARSING (Fidelity "Accounts History" / activity export)
+   CSV PARSING (Fidelity "History_for_Account_*.csv" activity export)
 
-   Expected columns (by substring match, case-insensitive, order-
-   independent): Run Date, Account, Action, Symbol, Description,
-   Type, Quantity, Price, Commission, Fees, Accrued Interest,
-   Amount, Settlement Date. Only Run Date/Action/Amount are
-   required — everything else degrades gracefully if missing.
+   Verified against a real single-account export. Its header is:
+   Run Date, Action, Symbol, Description, Type, Price ($), Quantity,
+   Commission ($), Fees ($), Accrued Interest ($), Amount ($),
+   Cash Balance ($), Settlement Date — preceded by two blank lines.
+   There's no Account column on a single-account export; the account
+   number is only in the filename ("History_for_Account_Z12345678.csv"),
+   so it's recovered from there as a fallback. Columns are matched by
+   substring, case-insensitive, order-independent, so a multi-account
+   export with an actual Account column (untested) should still work.
+   Only Run Date/Action/Amount are required — everything else degrades
+   gracefully if missing.
 
-   The header row is located by scanning the first few lines for
-   one containing both "run date" and "action" (Fidelity exports
-   sometimes prepend a title line). Rows that don't parse to a
-   valid date are skipped rather than aborting the import, which
-   also quietly drops the disclaimer/footer text some exports
-   append after the data.
+   The Action column is a full sentence ("YOU BOUGHT SPACE EXPL
+   TECHNOLOGIES CORP CL A (SPCX) (Cash)") rather than a short code —
+   see actionLabel() above for how that's shortened for display.
+
+   The header row is located by scanning the first few lines for one
+   containing both "run date" and "action". Rows that don't parse to a
+   valid date are skipped rather than aborting the import, which also
+   quietly drops the disclaimer/footer text (fund facts boilerplate,
+   "Date downloaded ...") the export appends after the data.
    ============================================================ */
 function parseCSVLine(line){
   const out = [];
@@ -109,11 +132,13 @@ function parseFidelityActivityCSV(text, sourceName){
     fees: findCol(header, ['fees']),
     accruedInterest: findCol(header, ['accrued interest']),
     amount: findCol(header, ['amount']),
+    cashBalance: findCol(header, ['cash balance']),
     settlementDate: findCol(header, ['settlement date']),
   };
   if (idx.date === -1 || idx.action === -1 || idx.amount === -1){
     throw new Error(`${sourceName}: missing one of the required columns (Run Date, Action, Amount)`);
   }
+  const filenameAccount = (sourceName.match(/Account[_\s]+([A-Za-z0-9]+)/i) || [])[1] || '';
 
   const rows = [];
   for (let i=headerIdx+1; i<lines.length; i++){
@@ -127,7 +152,7 @@ function parseFidelityActivityCSV(text, sourceName){
     const quantity = idx.quantity === -1 ? 0 : (parseMoney(cells[idx.quantity]) || 0);
     rows.push({
       date,
-      account: idx.account === -1 ? '' : (cells[idx.account] || ''),
+      account: (idx.account === -1 ? '' : (cells[idx.account] || '')) || filenameAccount,
       action: idx.action === -1 ? '' : (cells[idx.action] || ''),
       symbol: idx.symbol === -1 ? '' : (cells[idx.symbol] || '').trim(),
       description: idx.description === -1 ? '' : (cells[idx.description] || ''),
@@ -138,6 +163,7 @@ function parseFidelityActivityCSV(text, sourceName){
       fees: idx.fees === -1 ? 0 : (parseMoney(cells[idx.fees]) || 0),
       accruedInterest: idx.accruedInterest === -1 ? 0 : (parseMoney(cells[idx.accruedInterest]) || 0),
       amount,
+      cashBalance: idx.cashBalance === -1 ? NaN : parseMoney(cells[idx.cashBalance]),
       settlementDate: idx.settlementDate === -1 ? null : parseActivityDate(cells[idx.settlementDate]),
       source: sourceName,
     });
@@ -185,6 +211,11 @@ function aggregate(activity){
   }
   const holdings = Array.from(bySymbol.values()).sort((a,b)=> b.costBasis - a.costBasis);
 
+  // Same-day rows are in whatever order the source file listed them
+  // (newest-first) — a stable ascending sort preserves that sub-order,
+  // which isn't necessarily the true intra-day sequence. Fidelity's
+  // export doesn't carry a timestamp finer than the date, so there's no
+  // way to recover the real order; fine for a day-granularity chart.
   const sorted = activity.slice().sort((a,b)=> a.date - b.date);
   let running = 0;
   const netInvestedSeries = sorted.map(r=>{
@@ -192,13 +223,21 @@ function aggregate(activity){
     return { date: r.date, value: running };
   });
 
+  // Fidelity reports its own running cash balance per row — more
+  // trustworthy than netInvestedSeries since it's not something we
+  // derived, but it only reflects settled cash/money-market, not the
+  // market value of positions held.
+  const cashBalanceSeries = sorted
+    .filter(r => !isNaN(r.cashBalance))
+    .map(r => ({ date: r.date, value: r.cashBalance }));
+
   const byBucket = new Map();
   for (const r of activity){
     const b = bucketFor(r.action);
     byBucket.set(b.key, (byBucket.get(b.key) || 0) + r.amount);
   }
 
-  return { holdings, netInvestedSeries, byBucket };
+  return { holdings, netInvestedSeries, cashBalanceSeries, byBucket };
 }
 
 /* ============================================================
@@ -231,6 +270,9 @@ function fmtNum(n, dp=4){
 function fmtDate(d){
   if (!d) return '—';
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+function escapeHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 }
 function el(tag, cls, text){
   const e = document.createElement(tag);
@@ -309,8 +351,8 @@ function renderHoldings(){
     if (h.symbol === selectedSymbol) tr.classList.add('selected');
     const avgCost = h.quantity !== 0 ? h.costBasis / h.quantity : NaN;
     tr.innerHTML = `
-      <td>${h.symbol}</td>
-      <td>${h.description || ''}</td>
+      <td>${escapeHtml(h.symbol)}</td>
+      <td>${escapeHtml(h.description)}</td>
       <td class="num">${fmtNum(h.quantity)}</td>
       <td class="num">${fmtMoney(h.costBasis)}</td>
       <td class="num">${fmtMoney(avgCost)}</td>
@@ -340,11 +382,12 @@ function renderActivity(){
   const rows = ACTIVITY.slice().sort((a,b)=> b.date - a.date);
   for (const r of rows){
     const tr = document.createElement('tr');
+    tr.title = r.action || '';
     tr.innerHTML = `
       <td>${fmtDate(r.date)}</td>
-      <td>${r.account || ''}</td>
-      <td>${r.action || ''}</td>
-      <td>${r.symbol || ''}</td>
+      <td>${escapeHtml(r.account)}</td>
+      <td>${escapeHtml(actionLabel(r.action))}</td>
+      <td>${escapeHtml(r.symbol)}</td>
       <td class="num">${r.quantity ? fmtNum(r.quantity) : ''}</td>
       <td class="num">${isNaN(r.price) ? '' : fmtMoney(r.price)}</td>
       <td class="num ${r.amount < 0 ? 'negative' : 'positive'}">${fmtMoney(r.amount)}</td>`;
@@ -450,10 +493,16 @@ function renderCharts(){
   body.appendChild(card1);
 
   const card2 = el('div', 'chart-card');
-  card2.appendChild(el('h3', null, 'Net Invested by Holding'));
-  const items = DERIVED.holdings.slice(0, 15).map(h => ({ label: h.symbol, value: h.costBasis }));
-  card2.appendChild(buildBarChart(items));
+  card2.appendChild(el('h3', null, 'Cash Balance Over Time'));
+  card2.appendChild(buildLineChart(DERIVED.cashBalanceSeries));
+  card2.appendChild(el('div', 'chart-legend', "Fidelity's reported settled cash/money-market balance — doesn't include the market value of positions held."));
   body.appendChild(card2);
+
+  const card3 = el('div', 'chart-card');
+  card3.appendChild(el('h3', null, 'Net Invested by Holding'));
+  const items = DERIVED.holdings.slice(0, 15).map(h => ({ label: h.symbol, value: h.costBasis }));
+  card3.appendChild(buildBarChart(items));
+  body.appendChild(card3);
 
   wrap.appendChild(body);
   return wrap;
@@ -497,7 +546,7 @@ function renderRight(){
   const txList = ACTIVITY.filter(r => r.symbol === selectedSymbol).sort((a,b)=> b.date - a.date);
   for (const r of txList){
     const row = el('div', 'tx-row');
-    row.appendChild(el('span', null, `${fmtDate(r.date)} · ${r.action}`));
+    row.appendChild(el('span', null, `${fmtDate(r.date)} · ${actionLabel(r.action)}`));
     row.appendChild(el('span', `num ${r.amount < 0 ? 'negative' : 'positive'}`, fmtMoney(r.amount)));
     wrap.appendChild(row);
   }
