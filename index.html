@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Investr</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+<div class="app right-collapsed">
+
+  <!-- ================= LEFT PANEL ================= -->
+  <div class="left panel">
+    <div class="logo">INVESTR</div>
+    <div class="left-body">
+      <div class="tf-list" id="tfList"></div>
+    </div>
+  </div>
+
+  <!-- ================= MIDDLE PANEL ================= -->
+  <div class="mid panel" id="midPanel"></div>
+
+  <!-- ================= RIGHT PANEL ================= -->
+  <div class="right panel collapsed" id="rightPanel">
+    <button type="button" class="right-collapse-btn" id="rightPanelCollapseBtn" aria-label="Collapse panel" aria-hidden="true" tabindex="-1">
+      <img src="icons/collapse.svg" alt="">
+    </button>
+    <button type="button" class="right-expand-btn" id="rightPanelExpandBtn" aria-label="Expand panel">
+      <img src="icons/chevron-left.svg" alt="">
+    </button>
+    <div class="right-content" id="rightPanelBody" inert></div>
+  </div>
+
+  <!-- ================= STATUS BAR ================= -->
+  <div class="status panel">
+    <div class="status-left">
+      <button type="button" class="btn" id="importCsvBtn">Import CSV</button>
+      <input type="file" id="importCsvInput" accept=".csv" multiple hidden>
+      <button type="button" class="btn" id="loadJsonBtn">Load JSON</button>
+      <input type="file" id="loadJsonInput" accept=".json" hidden>
+      <button type="button" class="btn" id="saveJsonBtn">Save JSON</button>
+      <button type="button" class="btn btn-danger" id="clearBtn">Clear</button>
+    </div>
+    <div class="status-chip" id="statusChip"></div>
+    <div class="io-status" id="ioStatus"></div>
+  </div>
+
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
